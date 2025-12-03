@@ -33,8 +33,8 @@ if (!config.database.connectionString && !config.database.host) {
   console.warn('Warning: Database connection not configured. Set DATABASE_URL or DB_HOST.');
 }
 
-if (!config.apiKey) {
-  console.warn('Warning: API_KEY not set. Update operations will be unprotected.');
+if (!config.apiKey || config.apiKey.trim().length === 0) {
+  console.warn('Warning: API_KEY not set or is empty. Update operations will be rejected.');
 }
 
 module.exports = config;
