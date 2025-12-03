@@ -6,6 +6,9 @@ const database = require('./src/database');
 const tools = require('./src/tools');
 const { z } = require('zod');
 
+// Store parsed arguments by request ID for handler access
+const parsedArgsCache = {};
+
 // Initialize Express app for HTTPS deployment
 const app = express();
 app.use(express.json());
@@ -39,8 +42,23 @@ async function initializeMCPServer() {
           resume: z.any().describe('The complete resume object'),
           apiKey: z.string().describe('API key for authentication'),
         }),
-        async (args, extra) => {
-          return await tool.handler(args);
+        async (...allArgs) => {
+          // MCP SDK may pass internals as first arg, check cache for actual user args
+          let userArgs = allArgs.find(arg => 
+            arg && typeof arg === 'object' && 
+            (arg.resume !== undefined || arg.apiKey !== undefined)
+          );
+          
+          // If not found, try cache using requestId from MCP internals
+          if (!userArgs && allArgs[0] && allArgs[0].requestId) {
+            const cached = parsedArgsCache[allArgs[0].requestId];
+            if (cached) {
+              userArgs = cached;
+              delete parsedArgsCache[allArgs[0].requestId];
+            }
+          }
+          
+          return await tool.handler(userArgs || allArgs[0]);
         }
       );
     } else if (tool.name === 'patch_resume') {
@@ -51,8 +69,23 @@ async function initializeMCPServer() {
           partialResume: z.any().describe('Partial resume object with fields to update'),
           apiKey: z.string().describe('API key for authentication'),
         }),
-        async (args, extra) => {
-          return await tool.handler(args);
+        async (...allArgs) => {
+          // MCP SDK may pass internals as first arg, check cache for actual user args
+          let userArgs = allArgs.find(arg => 
+            arg && typeof arg === 'object' && 
+            (arg.partialResume !== undefined || arg.apiKey !== undefined)
+          );
+          
+          // If not found, try cache using requestId from MCP internals
+          if (!userArgs && allArgs[0] && allArgs[0].requestId) {
+            const cached = parsedArgsCache[allArgs[0].requestId];
+            if (cached) {
+              userArgs = cached;
+              delete parsedArgsCache[allArgs[0].requestId];
+            }
+          }
+          
+          return await tool.handler(userArgs || allArgs[0]);
         }
       );
     } else if (tool.name === 'restore_version') {
@@ -136,6 +169,40 @@ async function main() {
         console.error(`No active transport found for session ID: ${sessionId}`);
         res.status(404).send('Session not found');
         return;
+      }
+
+      // Pre-process the request body to parse stringified Python dicts
+      if (req.body && req.body.params && req.body.params.arguments) {
+        const args = req.body.params.arguments;
+        const requestId = req.body.id || req.body.params._meta?.progressToken;
+        
+        // If partialResume is a string (Python dict syntax), try to parse it
+        if (args.partialResume && typeof args.partialResume === 'string') {
+          try {
+            // Replace Python dict syntax with JSON
+            const jsonStr = args.partialResume.replace(/'/g, '"');
+            args.partialResume = JSON.parse(jsonStr);
+            // Cache the parsed args for handler access
+            if (requestId) {
+              parsedArgsCache[requestId] = { ...args };
+            }
+          } catch (parseError) {
+            console.error('Failed to parse partialResume string:', parseError);
+          }
+        }
+        // Same for resume
+        if (args.resume && typeof args.resume === 'string') {
+          try {
+            const jsonStr = args.resume.replace(/'/g, '"');
+            args.resume = JSON.parse(jsonStr);
+            // Cache the parsed args for handler access
+            if (requestId) {
+              parsedArgsCache[requestId] = { ...args };
+            }
+          } catch (parseError) {
+            console.error('Failed to parse resume string:', parseError);
+          }
+        }
       }
 
       try {
